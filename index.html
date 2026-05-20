@@ -1,0 +1,1801 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#FDF6F0">
+  <title>Book Tracker</title>
+  <link rel="icon" type="image/png" href="book-icon.png">
+  <link rel="apple-touch-icon" href="book-icon.png">
+  <meta name="apple-mobile-web-app-title" content="Amber's Shelf">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="row">
+      <h1>My Library</h1>
+      <div class="actions">
+        <button class="header-btn" id="headerAddBtn" type="button">Add Book</button>
+        <button class="header-btn" id="statsBtn" type="button">View Stats</button>
+      </div>
+    </div>
+
+    <div class="search-row">
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search" type="text" placeholder="Search title, author, series…" autocomplete="off">
+      </div>
+      <button class="filter-btn" id="filterBtn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        Filter
+        <span class="badge" id="filterBadge" hidden>0</span>
+      </button>
+      <div class="view-toggle" id="viewToggle" aria-label="Choose book view">
+        <button class="active" type="button" data-view="card">Cards</button>
+        <button type="button" data-view="table">Table</button>
+      </div>
+    </div>
+
+    <div class="status-tabs" id="statusTabs"></div>
+  </div>
+</header>
+
+<section class="stats" id="statsPanel" hidden>
+  <div class="stats-inner">
+    <div class="stats-range-bar" id="statsRangeBar">
+      <button type="button" data-range="month">This Month</button>
+      <button type="button" data-range="year">This Year</button>
+      <button type="button" data-range="all">All Time</button>
+      <button type="button" data-range="custom">Custom</button>
+    </div>
+    <div class="stats-custom-range" id="statsCustomRange" hidden>
+      <label>
+        From
+        <input type="date" id="statsStartDate">
+      </label>
+      <label>
+        To
+        <input type="date" id="statsEndDate">
+      </label>
+    </div>
+    <div class="stats-grid" id="statsGrid"></div>
+  </div>
+</section>
+
+<div class="content-wrapper">
+  <main class="list" id="list"></main>
+</div>
+
+
+<div class="sheet-backdrop" id="backdrop"></div>
+
+<aside class="sheet" id="sheet" role="dialog" aria-modal="true">
+  <div class="grabber"></div>
+  <header>
+    <button class="close" id="sheetClose">Close</button>
+    <h2 id="sheetTitle">Book</h2>
+    <button class="save" id="sheetSave" hidden>Save</button>
+  </header>
+  <div class="body" id="sheetBody"></div>
+</aside>
+
+<div class="toast" id="toast">Saved</div>
+
+<script>
+/* ─────────────────────────────────────────────
+   Constants
+   ───────────────────────────────────────────── */
+const STATUSES = [
+  { key: "all",      label: "All"      },
+  { key: "reading",  label: "Reading"  },
+  { key: "want",     label: "TBR"      },
+  { key: "vetting",  label: "Vetting"  },
+  { key: "finished", label: "Finished" },
+  { key: "dnf",      label: "DNF"      },
+];
+const STATUS_LABELS = {
+  reading: "Reading", want: "TBR", vetting: "Vetting",
+  finished: "Finished", dnf: "DNF",
+};
+const GENRES = [
+  "Romantasy",
+  "Epic Fantasy",
+  "Contemporary Romance",
+  "Sports Romance",
+  "Dark Romance",
+  "Mafia Romance",
+  "Dystopian",
+  "Memoir",
+  "Fiction",
+  "Historical Fiction",
+  "Science Fiction",
+  "Non Fiction",
+  "Thriller",
+  "Other"
+];
+const STORAGE_KEY = "HIDDEN";
+const VIEW_MODE_KEY = "HIDDEN";
+const STATUS_TAB_KEY = "HIDDEN";
+const CLOUD_SAVE_URL = "HIDDEN";
+
+/* ─────────────────────────────────────────────
+   State
+   ───────────────────────────────────────────── */
+const state = {
+  books: [],
+  filters: {
+    status: localStorage.getItem(STATUS_TAB_KEY) || "all",
+    search: "",
+    spice: null,
+    rating: null,
+    genre: "",
+    slowBurn: null,
+    seriesStatus: "",
+    tropes: [],
+  },
+  statsRange: {
+    mode: "all",
+    startDate: "",
+    endDate: "",
+  },
+  viewMode: localStorage.getItem(VIEW_MODE_KEY) || "card",
+  tableSort: {
+    key: "status",
+    direction: "asc",
+  },
+  tableDensity: "comfortable",
+};
+
+/* ─────────────────────────────────────────────
+   Data I/O
+   ───────────────────────────────────────────── */
+async function loadData() {
+  let localData = null;
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    try { localData = JSON.parse(saved); }
+    catch (e) { localData = null; }
+  }
+
+  try {
+    const cloudRes = await fetch(CLOUD_SAVE_URL);
+    if (cloudRes.ok) {
+      const cloudData = await cloudRes.json();
+      if (cloudData && Array.isArray(cloudData.books) && cloudData.books.length) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ books: cloudData.books }));
+        return cloudData;
+      }
+    }
+  } catch (e) {
+    console.warn("Cloud load failed, falling back to local data:", e);
+  }
+
+  if (localData && Array.isArray(localData.books)) return localData;
+
+  try {
+    const res = await fetch("data.json");
+    return await res.json();
+  } catch (e) {
+    return { books: [] };
+  }
+}
+function persist() {
+  const payload = { books: state.books };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+
+  fetch(CLOUD_SAVE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch((e) => {
+    console.warn("Cloud save failed, local backup still saved:", e);
+  });
+}
+function persistViewMode() {
+  localStorage.setItem(VIEW_MODE_KEY, state.viewMode);
+}
+
+/* ─────────────────────────────────────────────
+   Helpers
+   ───────────────────────────────────────────── */
+const $  = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const uid = () => "b" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const todayLocalDate = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const formatDisplayDate = (value) => {
+  if (!value) return "—";
+
+  const parts = String(value).split("-");
+  if (parts.length !== 3) return value;
+
+  const year = parts[0].slice(-2);
+  const month = String(Number(parts[1]));
+  const day = String(Number(parts[2]));
+
+  return `${month}/${day}/${year}`;
+};
+const spiceHtml = (n) => {
+  const count = Math.max(0, Math.min(5, Number(n) || 0));
+
+  return Array.from({ length: 5 }, (_, i) => {
+    const isOn = i < count;
+    const icon = i === 0 ? "🫑" : "🌶️";
+    const offStyle = i === 0
+      ? "opacity:0.32; filter:none;"
+      : "opacity:0.26; filter:grayscale(1);";
+
+    return `<span class="${isOn ? "" : "off"}" style="${isOn ? "" : offStyle}">${icon}</span>`;
+  }).join("");
+};
+
+const starsHtml = (n) => {
+  const count = Math.max(0, Math.min(5, Number(n) || 0));
+
+  return Array.from({ length: 5 }, (_, i) => {
+    return `<span class="${i < count ? "" : "off"}">🌟</span>`;
+  }).join("");
+};
+
+const TROPE_KEYWORDS = [
+  { label: "Chosen One / Prophecy", terms: ["chosen one", "chosen-one", "prophecy", "prophesied", "destined one", "destiny", "foretold"] },
+  { label: "Enemies To Lovers", terms: ["enemies to lovers", "enemies-to-lovers", "enemy to lover", "enemy-to-lover", "enemies", "enemy", "sworn enemy", "hated rival", "nemesis"] },
+  { label: "Fated Mates", terms: ["fated mate", "fated mates", "mate bond", "mates", "bonded mate", "soulmate", "soul mate"] },
+  { label: "Magic Academy", terms: ["magic academy", "magical academy", "academy", "school of magic", "magic school", "college of magic", "university of magic"] },
+  { label: "Forbidden Love", terms: ["forbidden romance", "forbidden love", "forbidden", "off limits", "off-limits", "taboo"] },
+  { label: "Morally Grey / Villain", terms: ["morally gray", "morally grey", "antihero", "anti-hero", "villain", "villain love interest", "villainous", "dark hero", "morally ambiguous"] },
+  { label: "Bodyguard / Protector", terms: ["bodyguard", "protector", "protect her", "protect him", "protective", "guard her", "guard him", "personal guard", "assigned to protect", "touch her and die", "touch him and die"] },
+  { label: "Hidden Identity / Disguise", terms: ["hidden identity", "secret identity", "disguise", "disguised", "undercover", "masquerade", "pretending to be", "not who she seems", "not who he seems"] },
+  { label: "Found Family", terms: ["found family", "chosen family", "unlikely family", "band of misfits"] },
+  { label: "Power Imbalance", terms: ["power imbalance", "forbidden power", "boss", "king", "queen", "ruler", "teacher", "mentor", "captor", "commander"] },
+  { label: "Slow Burn", terms: ["slow burn", "slow-burn", "slowly fall", "slowly falling", "slowly falling in love"] },
+  { label: "Yearning", terms: ["yearning", "pining", "longing", "aches for", "burns for", "unrequited tension"] },
+  { label: "Reverse Harem", terms: ["reverse harem", "why choose", "why-choose", "multiple love interests", "multiple mates", "her men", "shared heroine"] },
+  { label: "Arranged Marriage", terms: ["arranged marriage", "betrothed", "arranged match", "promised bride", "promised groom"] },
+  { label: "Immortal/Mortal", terms: ["immortal", "mortal", "immortal and mortal", "deathless", "ageless", "eternal"] },
+  { label: "Forced Proximity", terms: ["forced proximity", "forced-proximity", "trapped together", "stuck together", "stuck with", "locked together", "thrown together", "stranded together"] },
+  { label: "Fake Dating", terms: ["fake dating", "fake relationship", "pretend relationship", "fake boyfriend", "fake girlfriend", "pretend boyfriend", "pretend girlfriend"] },
+  { label: "Second Chance", terms: ["second chance", "second-chance", "reunited", "ex lover", "ex-lover", "former lover", "old flame", "first love returns"] },
+  { label: "Brother's Best Friend", terms: ["brother's best friend", "brothers best friend", "sister's best friend", "sisters best friend"] },
+  { label: "Grumpy/Sunshine", terms: ["grumpy sunshine", "grumpy/sunshine", "grumpy and sunshine", "sunshine heroine", "grumpy hero", "grumpy"] },
+  { label: "One Bed", terms: ["only one bed", "one bed", "share a bed", "sharing a bed"] },
+  { label: "Small Town Romance", terms: ["small town", "small-town", "hometown", "cozy town"] },
+  { label: "Sports Romance", terms: ["sports romance", "football", "hockey", "baseball", "basketball", "soccer", "athlete", "quarterback", "coach"] },
+  { label: "Age Gap", terms: ["age gap", "age-gap", "older man", "older woman", "younger man", "younger woman"] },
+  { label: "Best Friends To Lovers", terms: ["best friends to lovers", "friends to lovers", "friend to lover", "childhood friends", "best friend"] },
+  { label: "Office Romance", terms: ["office romance", "workplace romance", "coworker", "co-worker", "colleague", "boss", "assistant", "workplace"] },
+  { label: "Single Parent Romance", terms: ["single parent", "single mom", "single mother", "single dad", "single father", "widowed father", "widowed mother"] },
+  { label: "Love Triangle", terms: ["love triangle", "torn between", "two men", "two women", "rival suitors"] },
+  { label: "Hurt/Comfort", terms: ["hurt comfort", "hurt/comfort", "wounded", "injured", "heals her", "heals him", "comforts her", "comforts him", "who did this to you", "who hurt you"] },
+  { label: "Marriage Of Convenience", terms: ["marriage of convenience", "convenient marriage", "fake marriage", "temporary marriage"] },
+  { label: "Ex Boyfriend's Dad", terms: ["ex boyfriend's dad", "ex-boyfriend's dad", "ex boyfriends dad", "ex boyfriend's father", "ex-boyfriend's father", "ex's dad", "ex's father"] },
+  { label: "MM", terms: ["mm romance", "m/m", "male male romance", "male/male romance", "gay romance", "two men fall in love"] },
+];
+
+
+function detectTropes(text) {
+  const source = String(text || "").toLowerCase();
+  if (!source.trim()) return [];
+  return TROPE_KEYWORDS
+    .filter((trope) => trope.terms.some((term) => source.includes(term)))
+    .map((trope) => trope.label);
+}
+
+function detectSlowBurn(text, tropes = []) {
+  const source = String(text || "").toLowerCase();
+  const tropeList = Array.isArray(tropes) ? tropes : [];
+
+  return ["slow burn", "slow-burn", "pining", "yearning", "enemies to lovers", "enemies-to-lovers"].some((term) => source.includes(term)) ||
+    tropeList.includes("Slow Burn") ||
+    tropeList.includes("Enemies To Lovers");
+}
+
+function inferGenreFromTropes(tropes = []) {
+  const tropeList = Array.isArray(tropes) ? tropes : [];
+  const genreMap = {
+    "Chosen One / Prophecy": "Romantasy",
+    "Fated Mates": "Romantasy",
+    "Magic Academy": "Romantasy",
+    "Immortal/Mortal": "Romantasy",
+    "Fake Dating": "Contemporary Romance",
+    "Second Chance": "Contemporary Romance",
+    "Brother's Best Friend": "Contemporary Romance",
+    "Small Town Romance": "Contemporary Romance",
+    "Sports Romance": "Sports Romance",
+    "Office Romance": "Contemporary Romance",
+    "Single Parent Romance": "Contemporary Romance",
+    "Ex Boyfriend's Dad": "Contemporary Romance",
+    "MM": "Contemporary Romance",
+  };
+
+  for (const trope of tropeList) {
+    if (genreMap[trope]) return genreMap[trope];
+  }
+
+  return "";
+}
+
+function showToast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(showToast._tid);
+  showToast._tid = setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+function showSimpleConfirmMessage(message) {
+  const existing = document.querySelector(".delete-confirm-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "delete-confirm-backdrop";
+  backdrop.style.cssText = `
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(31, 10, 28, 0.42);
+    backdrop-filter: blur(6px);
+  `;
+
+  backdrop.innerHTML = `
+    <div class="delete-confirm-box" style="
+      width: min(360px, 100%);
+      padding: 24px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #1B1A2E 0%, #2A2338 58%, #381347 100%);
+      border: 1px solid rgba(201, 154, 182, 0.42);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42), 0 0 28px rgba(162, 58, 111, 0.18);
+      text-align: center;
+      color: #fdf6f0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 120px;
+    ">
+      <div style="
+        font-family: var(--body);
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        line-height: 1.5;
+        color: #f5c7d4;
+        margin: 0;
+      ">${escapeHtml(String(message).toUpperCase())}</div>
+    </div>
+  `;
+
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  setTimeout(() => {
+    backdrop.style.transition = "opacity 260ms ease";
+    backdrop.style.opacity = "0";
+    setTimeout(close, 260);
+  }, 1100);
+}
+
+function showFinishedRatingPopup(book) {
+  const existing = document.querySelector(".delete-confirm-backdrop");
+  if (existing) existing.remove();
+
+  let selectedRating = 0;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "delete-confirm-backdrop";
+  backdrop.style.cssText = `
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(31, 10, 28, 0.42);
+    backdrop-filter: blur(6px);
+  `;
+
+  const ratingButtons = Array.from({ length: 5 }, (_, i) => {
+    const value = i + 1;
+    const isOn = selectedRating >= value;
+    return `<button class="finish-rating-star ${isOn ? "on" : ""}" type="button" data-rating="${value}" style="
+      width: 42px;
+      height: 42px;
+      border: 0;
+      background: transparent;
+      font-size: 28px;
+      line-height: 1;
+      cursor: pointer;
+      opacity: ${isOn ? "1" : "0.28"};
+      filter: ${isOn ? "none" : "grayscale(1)"};
+    ">🌟</button>`;
+  }).join("");
+
+  backdrop.innerHTML = `
+    <div class="delete-confirm-box" style="
+      width: min(360px, 100%);
+      padding: 24px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #1B1A2E 0%, #2A2338 58%, #381347 100%);
+      border: 1px solid rgba(201, 154, 182, 0.42);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42), 0 0 28px rgba(162, 58, 111, 0.18);
+      text-align: center;
+      color: #fdf6f0;
+    ">
+      <div style="
+        font-family: var(--body);
+        font-size: 20px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        line-height: 1.5;
+        color: #f5c7d4;
+        margin-bottom: 16px;
+      ">Star rating</div>
+      <div class="finish-rating-picker" style="display:flex; justify-content:center; gap:4px; margin-bottom:20px;">
+        ${ratingButtons}
+      </div>
+      <button class="finish-rating-done" type="button" style="
+        min-width: 120px;
+        padding: 12px 18px;
+        border: 0;
+        border-radius: 999px;
+        background: #f5c7d4;
+        color: #1B1A2E;
+        font-family: var(--body);
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+      ">Done</button>
+    </div>
+  `;
+
+  document.body.appendChild(backdrop);
+
+  const renderStars = () => {
+    $$(".finish-rating-star", backdrop).forEach((btn) => {
+      const value = Number(btn.dataset.rating) || 0;
+      const isOn = selectedRating >= value;
+      btn.classList.toggle("on", isOn);
+      btn.style.opacity = isOn ? "1" : "0.28";
+      btn.style.filter = isOn ? "none" : "grayscale(1)";
+    });
+  };
+
+  $$(".finish-rating-star", backdrop).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedRating = selectedRating === Number(btn.dataset.rating) ? 0 : Number(btn.dataset.rating);
+      renderStars();
+    });
+  });
+
+  backdrop.querySelector(".finish-rating-done").addEventListener("click", () => {
+    book.status = "finished";
+    book.rating = selectedRating;
+    book.dateFinished = todayLocalDate();
+    persist();
+    renderAll();
+    backdrop.remove();
+    showSimpleConfirmMessage("Marked finished");
+  });
+
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  });
+}
+
+function showDeleteConfirm(onConfirm) {
+  const existing = document.querySelector(".delete-confirm-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "delete-confirm-backdrop";
+  backdrop.style.cssText = `
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(31, 10, 28, 0.42);
+    backdrop-filter: blur(6px);
+  `;
+
+  backdrop.innerHTML = `
+    <div class="delete-confirm-box" style="
+      width: min(360px, 100%);
+      padding: 24px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #1B1A2E 0%, #2A2338 58%, #381347 100%);
+      border: 1px solid rgba(201, 154, 182, 0.42);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42), 0 0 28px rgba(162, 58, 111, 0.18);
+      text-align: center;
+      color: #fdf6f0;
+    ">
+      <div style="
+        font-family: var(--body);
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1.5;
+        color: #f5c7d4;
+        margin-bottom: 18px;
+      ">Are you sure you want to delete this book?</div>
+      <div style="display: flex; gap: 12px; justify-content: center;">
+        <button class="delete-confirm-cancel" type="button" style="
+          min-width: 104px;
+          padding: 12px 18px;
+          border: 1px solid rgba(245, 199, 212, 0.32);
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.06);
+          color: #fdf6f0;
+          font-family: var(--body);
+          cursor: pointer;
+        ">Cancel</button>
+        <button class="delete-confirm-yes" type="button" style="
+          min-width: 104px;
+          padding: 12px 18px;
+          border: 0;
+          border-radius: 999px;
+          background: #f5c7d4;
+          color: #1B1A2E;
+          font-family: var(--body);
+          cursor: pointer;
+        ">Yes</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".delete-confirm-cancel").addEventListener("click", close);
+  backdrop.querySelector(".delete-confirm-yes").addEventListener("click", () => {
+    close();
+    onConfirm();
+  });
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
+}
+
+function blankBook() {
+  return {
+    id: uid(),
+    title: "", author: "",
+    seriesName: "", seriesStatus: "standalone", seriesTotal: 1, seriesCurrent: 1,
+    status: "want",
+    spice: 0, slowBurn: false,
+    genre: "",
+    publicationDate: "",
+    pageCount: 0,
+    dateAdded: todayLocalDate(),
+    rating: 0,
+    notes: "",
+    tropes: [],
+    goodreadsUrl: "", romanceIoUrl: "", sobriefUrl: "", coverUrl: "",
+    dateFinished: "",
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Filtering
+   ───────────────────────────────────────────── */
+function filterBooks() {
+  const f = state.filters;
+  const q = f.search.trim().toLowerCase();
+  return state.books.filter((b) => {
+    if (f.status !== "all" && b.status !== f.status) return false;
+    if (q) {
+      const hay = [b.title, b.author, b.seriesName, b.genre].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (f.spice != null && b.spice !== f.spice) return false;
+    if (f.rating != null && b.rating !== f.rating) return false;
+    if (f.genre && b.genre !== f.genre) return false;
+    if (f.slowBurn != null && b.slowBurn !== f.slowBurn) return false;
+    if (f.seriesStatus && b.seriesStatus !== f.seriesStatus) return false;
+    if (Array.isArray(f.tropes) && f.tropes.length) {
+      const bookTropes = [...new Set([...(Array.isArray(b.tropes) ? b.tropes : []), ...detectTropes([b.title, b.genre, b.notes].filter(Boolean).join(" "))])];
+      if (!f.tropes.some((trope) => bookTropes.includes(trope))) return false;
+    }
+    return true;
+  });
+}
+
+function activeFilterCount() {
+  const f = state.filters;
+  return (f.spice != null ? 1 : 0) + (f.rating != null ? 1 : 0) + (f.genre ? 1 : 0) + (f.slowBurn != null ? 1 : 0) + (f.seriesStatus ? 1 : 0) + (Array.isArray(f.tropes) ? f.tropes.length : 0);
+}
+
+function parseLocalDate(value) {
+  if (!value) return null;
+  const parts = String(value).split("-").map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function isBookInStatsRange(book) {
+  if (book.status !== "finished") return false;
+  const finishedDate = parseLocalDate(book.dateFinished);
+  if (!finishedDate) return false;
+
+  const now = new Date();
+  const mode = state.statsRange.mode;
+
+  if (mode === "all") return true;
+
+  if (mode === "month") {
+    return finishedDate.getFullYear() === now.getFullYear() && finishedDate.getMonth() === now.getMonth();
+  }
+
+  if (mode === "year") {
+    return finishedDate.getFullYear() === now.getFullYear();
+  }
+
+  if (mode === "custom") {
+    const start = parseLocalDate(state.statsRange.startDate);
+    const end = parseLocalDate(state.statsRange.endDate);
+    if (start && finishedDate < start) return false;
+    if (end && finishedDate > end) return false;
+    return true;
+  }
+
+  return true;
+}
+
+/* ─────────────────────────────────────────────
+   Render: status tabs
+   ───────────────────────────────────────────── */
+function renderStatusTabs() {
+  const root = $("#statusTabs");
+  const counts = state.books.reduce((acc, b) => {
+    acc.all = (acc.all || 0) + 1;
+    acc[b.status] = (acc[b.status] || 0) + 1;
+    return acc;
+  }, {});
+  const densityControls = state.viewMode === "table"
+    ? `
+      <div class="status-density-toggle" id="densityToggle" aria-label="Choose table density">
+        <button class="${state.tableDensity === "comfortable" ? "active" : ""}" type="button" data-density="comfortable">Comfortable</button>
+        <button class="${state.tableDensity === "compact" ? "active" : ""}" type="button" data-density="compact">Compact</button>
+      </div>
+    `
+    : "";
+
+  root.innerHTML = STATUSES.map((s) => `
+    <button data-status="${s.key}" class="${state.filters.status === s.key ? "active" : ""}">
+      ${escapeHtml(s.label)}<span class="count">${counts[s.key] || 0}</span>
+    </button>
+  `).join("") + densityControls;
+
+  $$("#statusTabs button[data-status]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.filters.status = btn.dataset.status;
+      localStorage.setItem(STATUS_TAB_KEY, state.filters.status);
+      renderStatusTabs();
+      renderList();
+    });
+  });
+
+  $$("#densityToggle button[data-density]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.tableDensity = btn.dataset.density;
+      renderStatusTabs();
+      renderList();
+    });
+  });
+}
+
+/* ─────────────────────────────────────────────
+   Render: list
+   ───────────────────────────────────────────── */
+
+function renderViewToggle() {
+  $$("#viewToggle button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.view === state.viewMode);
+  });
+}
+
+
+function sortBooksForCurrentView(books) {
+  const order = { reading: 0, vetting: 1, want: 2, finished: 3, dnf: 4 };
+  const sorted = [...books].sort((a, b) => {
+    const o = (order[a.status] ?? 9) - (order[b.status] ?? 9);
+    if (o !== 0) return o;
+    if (a.status === "finished") return (b.dateFinished || "").localeCompare(a.dateFinished || "");
+    return (a.title || "").localeCompare(b.title || "");
+  });
+
+  if (state.viewMode !== "table") return sorted;
+
+  const { key, direction } = state.tableSort;
+  const multiplier = direction === "desc" ? -1 : 1;
+
+  return sorted.sort((a, b) => {
+    let aValue = a[key];
+    let bValue = b[key];
+
+    if (key === "status") {
+      aValue = order[a.status] ?? 9;
+      bValue = order[b.status] ?? 9;
+    }
+
+    if (["rating", "spice", "pageCount"].includes(key)) {
+      aValue = Number(aValue) || 0;
+      bValue = Number(bValue) || 0;
+      return (aValue - bValue) * multiplier;
+    }
+
+    return String(aValue || "").localeCompare(String(bValue || "")) * multiplier;
+  });
+}
+
+function tableSortLabel(key, label) {
+  const isActive = state.tableSort.key === key;
+  const arrow = !isActive ? "" : state.tableSort.direction === "asc" ? " ↑" : " ↓";
+  return `${label}${arrow}`;
+}
+
+function renderList() {
+  const root = $("#list");
+  const books = filterBooks();
+  $("#filterBadge").textContent = activeFilterCount();
+  $("#filterBadge").hidden = activeFilterCount() === 0;
+
+  if (!books.length) {
+    root.innerHTML = `
+      <div class="list-empty">
+        <svg class="empty-state-icon" width="48" height="48" viewBox="0 0 48 48" fill="none">
+          <path d="M24 8 C24 8 12 16 12 26 C12 32.627 17.373 38 24 38 C30.627 38 36 32.627 36 26 C36 16 24 8 24 8Z" fill="#8B3A6B"/>
+          <path d="M24 14 C24 14 18 20 18 26 C18 29.314 20.686 32 24 32 C27.314 32 30 29.314 30 26 C30 20 24 14 24 14Z" fill="#F2C4CE"/>
+        </svg>
+        <div>Nothing on this shelf yet.</div>
+      </div>`;
+    return;
+  }
+
+  const sorted = sortBooksForCurrentView(books);
+
+  if (state.viewMode === "table") {
+    const rows = sorted.map((b, index) => {
+      const decorativeImage = b.coverUrl || `book-img/book-img-${(index % 10) + 1}.png`;
+      const seriesText = b.seriesName ? `${b.seriesName} #${b.seriesCurrent || "?"}` : "—";
+
+      return `
+        <tr class="book-table-row" data-id="${b.id}">
+          <td class="book-table-cover-cell">
+            <img class="book-table-cover" src="${escapeHtml(decorativeImage)}" alt="" loading="lazy">
+          </td>
+          <td>
+            <div class="book-table-title">${escapeHtml(b.title || "Untitled")}</div>
+            <div class="book-table-series">${escapeHtml(seriesText)}</div>
+          </td>
+          <td>${escapeHtml(b.author || "—")}</td>
+          <td><span class="pill ${b.status}">${STATUS_LABELS[b.status] || b.status}</span></td>
+          <td>${b.genre ? escapeHtml(b.genre) : "—"}</td>
+          <td><div class="stars">${starsHtml(b.rating)}</div></td>
+          <td><div class="book-spice">${spiceHtml(b.spice)}</div></td>
+          <td>${b.pageCount ? escapeHtml(b.pageCount) : "—"}</td>
+        </tr>
+      `;
+    }).join("");
+
+    root.innerHTML = `
+      <div class="book-table-wrap ${state.tableDensity === "compact" ? "is-compact" : ""}">
+        <table class="book-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th><button class="book-table-sort ${state.tableSort.key === "title" ? "active" : ""}" type="button" data-sort="title">${tableSortLabel("title", "Title")}</button></th>
+              <th><button class="book-table-sort ${state.tableSort.key === "author" ? "active" : ""}" type="button" data-sort="author">${tableSortLabel("author", "Author")}</button></th>
+              <th><button class="book-table-sort ${state.tableSort.key === "status" ? "active" : ""}" type="button" data-sort="status">${tableSortLabel("status", "Status")}</button></th>
+              <th><button class="book-table-sort ${state.tableSort.key === "genre" ? "active" : ""}" type="button" data-sort="genre">${tableSortLabel("genre", "Genre")}</button></th>
+              <th><button class="book-table-sort ${state.tableSort.key === "rating" ? "active" : ""}" type="button" data-sort="rating">${tableSortLabel("rating", "Rating")}</button></th>
+              <th><button class="book-table-sort ${state.tableSort.key === "spice" ? "active" : ""}" type="button" data-sort="spice">${tableSortLabel("spice", "Spice")}</button></th>
+              <th><button class="book-table-sort ${state.tableSort.key === "pageCount" ? "active" : ""}" type="button" data-sort="pageCount">${tableSortLabel("pageCount", "Pages")}</button></th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+
+    $$(".book-table-row", root).forEach((row) => {
+      row.addEventListener("click", () => openDetail(row.dataset.id));
+    });
+
+    $$(".book-table-sort", root).forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const key = btn.dataset.sort;
+        if (!key) return;
+
+        if (state.tableSort.key === key) {
+          state.tableSort.direction = state.tableSort.direction === "asc" ? "desc" : "asc";
+        } else {
+          state.tableSort.key = key;
+          state.tableSort.direction = ["rating", "spice", "pageCount"].includes(key) ? "desc" : "asc";
+        }
+
+        renderList();
+      });
+    });
+
+    return;
+  }
+
+  const cards = sorted.map((b) => {
+    const hasSeriesInfo = Boolean(
+      b.seriesName ||
+      b.seriesStatus !== "standalone" ||
+      Number(b.seriesCurrent) > 1 ||
+      Number(b.seriesTotal) > 1
+    );
+    const seriesLabel = b.seriesName ? escapeHtml(b.seriesName) : "Series";
+    const series = hasSeriesInfo
+      ? `<div class="series">${seriesLabel} · #${escapeHtml(b.seriesCurrent || "?")}${b.seriesStatus === "standalone" ? "" : ` of ${escapeHtml(b.seriesTotal || "?")}`}${b.seriesStatus === "yes" ? " · complete" : b.seriesStatus === "no" ? " · ongoing" : ""}</div>`
+      : "";
+    const decorativeImage = b.coverUrl || `book-img/book-img-${(sorted.indexOf(b) % 10) + 1}.png`;
+    const isDone = b.status === "finished" || b.status === "dnf";
+    const isMobileCardLayout = window.matchMedia("(max-width: 600px)").matches;
+    const bottomContent = isDone
+      ? isMobileCardLayout
+        ? `
+          <div class="book-date-added">${formatDisplayDate(b.dateAdded)}</div>
+          <div class="book-date-finished">${formatDisplayDate(b.dateFinished)}</div>
+          <div class="stars">${starsHtml(b.rating)}</div>
+          <div class="book-spice">${spiceHtml(b.spice)}</div>
+        `
+        : `
+          <div class="stars">${starsHtml(b.rating)}</div>
+          <div class="book-spice">${spiceHtml(b.spice)}</div>
+        `
+      : `
+          <div class="book-publication-date">${b.publicationDate ? escapeHtml(b.publicationDate) : "—"}</div>
+          <div class="book-page-count">${b.pageCount ? `${escapeHtml(b.pageCount)} pages` : "—"}</div>
+          <div class="book-date-added">${formatDisplayDate(b.dateAdded)}</div>
+          <div class="book-spice-preview"><span>Spice</span> ${spiceHtml(b.spice)}</div>
+          <button class="book-trash-action" type="button" data-id="${b.id}" aria-label="Delete book">
+              <svg viewBox="0 -960 960 960" aria-hidden="true">
+                <path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/>
+              </svg>
+            </button>
+        `;
+    const quickActions = isDone
+      ? ""
+      : `
+          <div class="book-quick-actions">
+            <button class="book-quick-action" type="button" data-action="finished" data-id="${b.id}">Finished</button>
+            <button class="book-quick-action" type="button" data-action="dnf" data-id="${b.id}">DNF</button>
+          </div>
+        `;
+
+    const doneDateModules = isDone && !isMobileCardLayout
+      ? `
+          <div class="book-done-dates" style="display:flex; gap:80px; align-items:center; margin-top:10px;">
+            <div class="book-date-added">${formatDisplayDate(b.dateAdded)}</div>
+            <div class="book-date-finished">${formatDisplayDate(b.dateFinished)}</div>
+          </div>
+        `
+      : "";
+
+    return `
+      <article class="book" data-id="${b.id}" data-status="${b.status}">
+        <div class="book-card-art-block">
+          <div class="book-card-image-wrap">
+            <img class="book-card-image" src="${decorativeImage}" alt="" loading="lazy">
+          </div>
+          <div class="book-slow-burn">
+            <div class="book-slow-burn-label">slow burn</div>
+            <div class="book-slow-burn-value">
+              <span class="book-slow-burn-icon" aria-hidden="true"></span>
+              <span>${b.slowBurn ? "Yes" : "No"}</span>
+            </div>
+          </div>
+        </div>
+        <div class="book-top">
+          <div class="book-title-block">
+            <div class="title">${escapeHtml(b.title || "Untitled")}</div>
+            <div class="author">${escapeHtml(b.author || "—")}</div>
+            ${series}
+          </div>
+        </div>
+        <div class="book-mid">
+          <span class="pill ${b.status}">${STATUS_LABELS[b.status] || b.status}</span>
+          ${b.genre ? `<span class="book-genre">${escapeHtml(b.genre)}</span>` : ""}
+        </div>
+        ${doneDateModules}
+        ${quickActions}
+        <div class="book-bottom ${isDone ? "is-done" : "is-upcoming"}">
+          ${bottomContent}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  root.innerHTML = `<div class="book-grid">${cards}</div>`;
+
+  $$(".book", root).forEach((el) => {
+    el.addEventListener("click", () => openDetail(el.dataset.id));
+  });
+
+  $$(".book-quick-action", root).forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const book = state.books.find((item) => String(item.id) === String(btn.dataset.id));
+      if (!book) return;
+
+      if (btn.dataset.action === "finished") {
+        showFinishedRatingPopup(book);
+        return;
+      }
+
+      book.status = btn.dataset.action;
+      if (book.status === "dnf") {
+        book.rating = 1;
+        book.dateFinished = todayLocalDate();
+      }
+
+      persist();
+      renderAll();
+      showSimpleConfirmMessage("Marked DNF");
+    });
+  });
+
+  $$(".book-trash-action", root).forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showDeleteConfirm(() => {
+        state.books = state.books.filter((item) => String(item.id) !== String(btn.dataset.id));
+        persist();
+        renderAll();
+        showSimpleConfirmMessage("Deleted");
+      });
+    });
+  });
+}
+
+/* ─────────────────────────────────────────────
+   Render: stats
+   ───────────────────────────────────────────── */
+function renderStats() {
+  const finished = state.books.filter(isBookInStatsRange);
+  $$("#statsRangeBar button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.range === state.statsRange.mode);
+  });
+  $("#statsCustomRange").hidden = state.statsRange.mode !== "custom";
+  $("#statsStartDate").value = state.statsRange.startDate;
+  $("#statsEndDate").value = state.statsRange.endDate;
+  const reading = state.books.filter((b) => b.status === "reading").length;
+  const ratedBooks = finished.filter((b) => b.rating);
+  const spicedBooks = finished.filter((b) => b.spice);
+  const avgRating = ratedBooks.length
+    ? (ratedBooks.reduce((s, b) => s + (b.rating || 0), 0) / ratedBooks.length).toFixed(1)
+    : "—";
+  const avgSpice = spicedBooks.length
+    ? (spicedBooks.reduce((s, b) => s + (b.spice || 0), 0) / spicedBooks.length).toFixed(1)
+    : "—";
+
+  $("#statsGrid").innerHTML = `
+    <div class="stat">
+      <div class="label">Books read</div>
+      <div class="value">${finished.length}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Avg rating</div>
+      <div class="value">${avgRating}<span class="stat-unit"> / 5</span></div>
+    </div>
+    <div class="stat">
+      <div class="label">Avg spice</div>
+      <div class="value">${avgSpice}<span class="stat-unit"> / 5</span></div>
+    </div>
+    <div class="stat">
+      <div class="label">Currently reading</div>
+      <div class="value">${reading}</div>
+    </div>
+  `;
+}
+
+/* ─────────────────────────────────────────────
+   Sheet utilities
+   ───────────────────────────────────────────── */
+function openSheet({ title, body, save, sheetClass = "" }) {
+  $("#sheetTitle").textContent = title;
+  const existingTopEdit = $("#sheetTopEdit");
+  if (existingTopEdit) existingTopEdit.remove();
+  $("#sheetBody").innerHTML = "";
+  if (typeof body === "string") $("#sheetBody").innerHTML = body;
+  else if (body instanceof Node) $("#sheetBody").appendChild(body);
+  $("#sheet").className = "sheet open " + sheetClass;
+  $("#backdrop").classList.add("open");
+  const saveBtn = $("#sheetSave");
+  if (save) {
+    saveBtn.hidden = false;
+    saveBtn.onclick = save;
+  } else {
+    saveBtn.hidden = true;
+    saveBtn.onclick = null;
+  }
+  document.body.style.overflow = "hidden";
+
+  requestAnimationFrame(() => {
+    const sheetBody = $("#sheetBody");
+    if (sheetBody) sheetBody.scrollTop = 0;
+  });
+}
+function closeSheet() {
+  $("#sheet").classList.remove("open");
+  $("#backdrop").classList.remove("open");
+  document.body.style.overflow = "";
+}
+$("#sheetClose").addEventListener("click", closeSheet);
+$("#backdrop").addEventListener("click", closeSheet);
+
+/* ─────────────────────────────────────────────
+   Detail view
+   ───────────────────────────────────────────── */
+function openDetail(id) {
+  const b = state.books.find((x) => String(x.id) === String(id));
+  const bookIndex = state.books.findIndex((x) => String(x.id) === String(id));
+  if (!b) return;
+
+  const hasSeriesInfo = Boolean(
+    b.seriesName ||
+    b.seriesStatus !== "standalone" ||
+    Number(b.seriesCurrent) > 1 ||
+    Number(b.seriesTotal) > 1
+  );
+  const seriesLabel = b.seriesName ? escapeHtml(b.seriesName) : "Series";
+  const seriesText = hasSeriesInfo
+    ? `${seriesLabel} · #${escapeHtml(b.seriesCurrent || "?")}${b.seriesStatus === "standalone" ? "" : ` of ${escapeHtml(b.seriesTotal || "?")}`}${b.seriesStatus === "yes" ? " · complete" : b.seriesStatus === "no" ? " · ongoing" : ""}`
+    : "Standalone";
+  const decorativeImage = b.coverUrl || `book-img/book-img-${((bookIndex >= 0 ? bookIndex : 0) % 10) + 1}.png`;
+  const tropeList = [...new Set([...(Array.isArray(b.tropes) ? b.tropes : []), ...detectTropes([b.title, b.genre, b.notes].filter(Boolean).join(" "))])];
+  const tropeHtml = tropeList.length
+    ? `<div class="detail-tropes"><div class="detail-tropes-label">Tropes</div><div class="detail-trope-pills">${tropeList.map((trope) => `<span>${escapeHtml(trope)}</span>`).join("")}</div></div>`
+    : `<div class="detail-tropes is-empty"><div class="detail-tropes-label">Tropes</div><div class="detail-trope-empty">No tropes detected yet</div></div>`;
+
+  // Removed unused notes block
+
+  const descriptionText = b.notes ? escapeHtml(b.notes) : "—";
+  const shouldTruncateDescription = Boolean(b.notes && b.notes.length > 95);
+  const descriptionHtml = shouldTruncateDescription
+    ? `<span class="description-preview-text">${descriptionText}</span> <button class="description-view-more" id="descriptionViewMore" type="button">View more</button>`
+    : descriptionText;
+
+  const links = (b.goodreadsUrl || b.romanceIoUrl || b.sobriefUrl)
+    ? `
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:10px;">
+        <div>
+          <h3>Links</h3>
+          <div class="links">
+            ${b.goodreadsUrl ? `<a href="${escapeHtml(b.goodreadsUrl)}" target="_blank" rel="noopener">Goodreads ↗</a>` : ""}
+            ${b.romanceIoUrl ? `<a href="${escapeHtml(b.romanceIoUrl)}" target="_blank" rel="noopener">Romance.io ↗</a>` : ""}
+            ${b.sobriefUrl ? `<a href="${escapeHtml(b.sobriefUrl)}" target="_blank" rel="noopener">Sobrief ↗</a>` : ""}
+          </div>
+        </div>
+
+        <button class="book-trash-action detail-trash-action" type="button" data-detail-delete="${b.id}" aria-label="Delete book">
+          <svg viewBox="0 -960 960 960" aria-hidden="true">
+            <path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/>
+          </svg>
+        </button>
+      </div>
+    `
+    : `
+      <button class="book-trash-action detail-trash-action" type="button" data-detail-delete="${b.id}" aria-label="Delete book">
+          <svg viewBox="0 -960 960 960" aria-hidden="true">
+            <path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/>
+          </svg>
+        </button>
+    `;
+
+  const html = `
+    <div class="detail">
+      <div class="detail-hero">
+        <div class="detail-heading">
+          <h2 class="title">${escapeHtml(b.title || "Untitled")}</h2>
+          <div class="author">${escapeHtml(b.author || "—")}</div>
+          <div class="series">${seriesText}</div>
+        </div>
+        <div class="detail-image-wrap">
+          <img class="detail-image" src="${decorativeImage}" alt="" loading="lazy">
+        </div>
+        ${tropeHtml}
+      </div>
+      <div class="row-meta">
+        <div class="group"><div class="label">Slow burn</div><div class="value">${b.slowBurn ? "Yes" : "No"}</div></div>
+        <div class="group"><div class="label">Published</div><div class="value">${b.publicationDate ? escapeHtml(b.publicationDate) : "—"}</div></div>
+        <div class="group"><div class="label">Pages</div><div class="value">${b.pageCount ? `${escapeHtml(b.pageCount)} pages` : "—"}</div></div>
+        <div class="group"><div class="label">Added</div><div class="value">${formatDisplayDate(b.dateAdded)}</div></div>
+        <div class="group"><div class="label">Finished</div><div class="value">${formatDisplayDate(b.dateFinished)}</div></div>
+        <div class="group"><div class="label">Rating</div><div class="value stars">${starsHtml(b.rating)}</div></div>
+        <div class="group"><div class="label">Spice</div><div class="value book-spice">${spiceHtml(b.spice)}</div></div>
+        <div class="group description-group"><div class="label">Description</div><div class="value description-preview">${descriptionHtml}</div></div>
+      </div>
+      ${links}
+    </div>
+  `;
+
+  openSheet({ title: "Book Details", body: html, sheetClass: "detail-popup-sheet" });
+  const topEditBtn = document.createElement("button");
+  topEditBtn.className = "header-btn";
+  topEditBtn.id = "sheetTopEdit";
+  topEditBtn.type = "button";
+  topEditBtn.textContent = "Edit";
+  $("#sheetClose").insertAdjacentElement("afterend", topEditBtn);
+  topEditBtn.addEventListener("click", () => openEditor(id));
+
+  const descriptionMoreBtn = $("#descriptionViewMore");
+  if (descriptionMoreBtn) {
+    descriptionMoreBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showDescriptionPopup(b.title || "Untitled", b.notes || "");
+    });
+  }
+
+  const detailDeleteBtn = $("[data-detail-delete]");
+  if (detailDeleteBtn) {
+    detailDeleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showDeleteConfirm(() => {
+        state.books = state.books.filter((item) => String(item.id) !== String(b.id));
+        persist();
+        renderAll();
+        closeSheet();
+        showSimpleConfirmMessage("Deleted");
+      });
+    });
+  }
+}
+
+function showDescriptionPopup(title, description) {
+  const existing = document.querySelector(".description-popup-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "description-popup-backdrop";
+  backdrop.innerHTML = `
+    <div class="description-popup" role="dialog" aria-modal="true">
+      <div class="description-popup-header">
+        <h3>Description</h3>
+        <button class="description-popup-close" type="button">Close</button>
+      </div>
+      <div class="description-popup-title">${escapeHtml(title)}</div>
+      <div class="description-popup-body">${escapeHtml(description)}</div>
+    </div>
+  `;
+
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  backdrop.querySelector(".description-popup-close").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
+}
+
+let googleBooksLookupAbort = null;
+let googleBooksLookupTimer = null;
+const googleBooksLookupCache = new Map();
+let lastGoogleBooksQuery = "";
+const GOOGLE_BOOKS_API_KEY = "HIDDEN API INFO";
+
+function normalizeGoogleBook(item) {
+  const info = item.volumeInfo || {};
+  const industryIds = Array.isArray(info.industryIdentifiers) ? info.industryIdentifiers : [];
+  const isbn13 = industryIds.find((id) => id.type === "ISBN_13")?.identifier || "";
+  const isbn10 = industryIds.find((id) => id.type === "ISBN_10")?.identifier || "";
+  const isbn = isbn13 || isbn10;
+  const titleAuthorSearch = [info.title, Array.isArray(info.authors) ? info.authors.join(" ") : ""].filter(Boolean).join(" ");
+  const coverUrl = info.imageLinks?.thumbnail || info.imageLinks?.smallThumbnail || "";
+  const tropeSource = [info.title, info.subtitle, info.description, info.mainCategory, Array.isArray(info.categories) ? info.categories.join(" ") : ""].filter(Boolean).join(" ");
+
+  return {
+    title: info.title || "",
+    author: Array.isArray(info.authors) ? info.authors.join(", ") : "",
+    seriesName: "",
+    genre: "",
+    seriesStatus: "standalone",
+    seriesCurrent: 1,
+    seriesTotal: 1,
+    publicationDate: info.publishedDate || "",
+    pageCount: info.pageCount || 0,
+    notes: info.description || "",
+    tropes: detectTropes(tropeSource),
+    slowBurn: detectSlowBurn(tropeSource),
+    goodreadsUrl: isbn ? `https://www.goodreads.com/search?q=${encodeURIComponent(isbn)}` : `https://www.goodreads.com/search?q=${encodeURIComponent(titleAuthorSearch)}`,
+    romanceIoUrl: `https://www.romance.io/search?q=${encodeURIComponent(titleAuthorSearch)}`,
+    sobriefUrl: `https://sobrief.com/search?q=${encodeURIComponent(info.title || "")}`,
+    coverUrl: coverUrl ? coverUrl.replace("http://", "https://") : "",
+  };
+}
+
+
+async function enrichOpenLibraryBook(book) {
+  return { ...book };
+}
+
+function normalizeOpenLibraryBook(item) {
+  const isbn = Array.isArray(item.isbn) ? item.isbn[0] : "";
+  const titleAuthorSearch = [item.title, Array.isArray(item.author_name) ? item.author_name.join(" ") : ""].filter(Boolean).join(" ");
+  const coverUrl = item.cover_i ? `https://covers.openlibrary.org/b/id/${item.cover_i}-L.jpg` : "";
+  const tropeSource = [item.title, Array.isArray(item.subject) ? item.subject.join(" ") : "", Array.isArray(item.first_sentence) ? item.first_sentence.join(" ") : ""].filter(Boolean).join(" ");
+
+  return {
+    title: item.title || "",
+    author: Array.isArray(item.author_name) ? item.author_name.join(", ") : "",
+    seriesName: "",
+    seriesStatus: "standalone",
+    seriesCurrent: 1,
+    seriesTotal: 1,
+    publicationDate: item.first_publish_year ? String(item.first_publish_year) : "",
+    pageCount: item.number_of_pages_median || 0,
+    notes: item.first_sentence?.[0] || "",
+    tropes: detectTropes(tropeSource),
+    slowBurn: detectSlowBurn(tropeSource),
+    goodreadsUrl: isbn ? `https://www.goodreads.com/search?q=${encodeURIComponent(isbn)}` : `https://www.goodreads.com/search?q=${encodeURIComponent(titleAuthorSearch)}`,
+    romanceIoUrl: `https://www.romance.io/search?q=${encodeURIComponent(titleAuthorSearch)}`,
+    sobriefUrl: `https://sobrief.com/search?q=${encodeURIComponent(item.title || "")}`,
+    coverUrl,
+  };
+}
+
+function renderGoogleBookResults(resultsBox, books, draft, wrap) {
+  if (!resultsBox) return;
+
+  if (!books.length) {
+    resultsBox.innerHTML = `<div class="google-books-empty">No book matches found.</div>`;
+    resultsBox.hidden = false;
+    return;
+  }
+
+  resultsBox.innerHTML = books.map((book, index) => {
+    const fallbackCover = `book-img/book-img-${(index % 10) + 1}.png`;
+    const resultCover = book.coverUrl || fallbackCover;
+
+    return `
+      <button class="google-book-result" type="button" data-book-index="${index}">
+        <span class="google-book-result-cover-wrap">
+          <img class="google-book-result-cover" src="${escapeHtml(resultCover)}" alt="" loading="lazy">
+        </span>
+        <span class="google-book-result-copy">
+          <span class="google-book-title">${escapeHtml(book.title || "Untitled")}</span>
+          <span class="google-book-meta">${escapeHtml(book.author || "Unknown author")}${book.publicationDate ? ` · ${escapeHtml(book.publicationDate)}` : ""}</span>
+        </span>
+      </button>
+    `;
+  }).join("");
+
+  resultsBox.hidden = false;
+
+  $$(".google-book-result", resultsBox).forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const selected = books[parseInt(btn.dataset.bookIndex, 10)];
+      if (!selected) return;
+
+      resultsBox.innerHTML = `<div class="google-books-empty">Filling book details…</div>`;
+      resultsBox.hidden = false;
+
+      const enriched = await enrichOpenLibraryBook(selected);
+      Object.assign(draft, enriched);
+
+      const fieldsToUpdate = ["title", "author", "seriesName", "seriesCurrent", "seriesTotal", "publicationDate", "pageCount", "notes", "goodreadsUrl", "romanceIoUrl", "sobriefUrl"];
+      fieldsToUpdate.forEach((key) => {
+        const field = $(`[data-k='${key}']`, wrap);
+        if (field) field.value = draft[key] ?? "";
+      });
+
+      const seriesButtons = $$(`[data-seg='seriesStatus'] button`, wrap);
+      seriesButtons.forEach((button) => button.classList.toggle("on", button.dataset.v === draft.seriesStatus));
+
+      const slowBurnButtons = $$(`[data-seg='slowBurn'] button`, wrap);
+      slowBurnButtons.forEach((button) => button.classList.toggle("on", String(button.dataset.v) === String(draft.slowBurn)));
+
+      resultsBox.hidden = true;
+      resultsBox.innerHTML = "";
+    });
+  });
+}
+
+function attachGoogleBooksLookup(wrap, draft) {
+  const titleInput = $(`input[data-k='title']`, wrap);
+  const searchBtn = $("#bookTitleSearchBtn", wrap);
+  const resultsBox = $("#googleBooksResults", wrap);
+  if (!titleInput || !searchBtn || !resultsBox) return;
+
+  const runSearch = async () => {
+    const query = titleInput.value.trim();
+    draft.title = titleInput.value;
+
+    if (query.length < 2) {
+      resultsBox.hidden = false;
+      resultsBox.innerHTML = `<div class="google-books-empty">Type a title first.</div>`;
+      return;
+    }
+
+    const cacheKey = query.toLowerCase();
+    if (googleBooksLookupCache.has(cacheKey)) {
+      renderGoogleBookResults(resultsBox, googleBooksLookupCache.get(cacheKey), draft, wrap);
+      return;
+    }
+
+    resultsBox.hidden = false;
+    resultsBox.innerHTML = `<div class="google-books-empty">Searching Google Books…</div>`;
+    searchBtn.disabled = true;
+    searchBtn.textContent = "Searching";
+
+    try {
+      if (googleBooksLookupAbort) googleBooksLookupAbort.abort();
+      googleBooksLookupAbort = new AbortController();
+
+      const googleUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=5&printType=books&key=${GOOGLE_BOOKS_API_KEY}`;
+      const response = await fetch(googleUrl, { signal: googleBooksLookupAbort.signal });
+
+      if (response.status === 429) {
+        resultsBox.innerHTML = `<div class="google-books-empty">Google is rate-limiting, trying backup search…</div>`;
+        const backupUrl = `https://openlibrary.org/search.json?title=${encodeURIComponent(query)}&limit=5`;
+        const backupResponse = await fetch(backupUrl, { signal: googleBooksLookupAbort.signal });
+        if (!backupResponse.ok) throw new Error(`Backup search failed: ${backupResponse.status}`);
+        const backupData = await backupResponse.json();
+        const backupBooks = Array.isArray(backupData.docs) ? backupData.docs.map(normalizeOpenLibraryBook) : [];
+        googleBooksLookupCache.set(cacheKey, backupBooks);
+        renderGoogleBookResults(resultsBox, backupBooks, draft, wrap);
+        return;
+      }
+
+      if (!response.ok) throw new Error(`Google Books request failed: ${response.status}`);
+
+      const data = await response.json();
+      const books = Array.isArray(data.items) ? data.items.map(normalizeGoogleBook) : [];
+      googleBooksLookupCache.set(cacheKey, books);
+      renderGoogleBookResults(resultsBox, books, draft, wrap);
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      console.error("Google Books lookup failed:", error);
+      resultsBox.innerHTML = `<div class="google-books-empty">Could not load Google Books results. ${escapeHtml(error.message || "")}</div>`;
+      resultsBox.hidden = false;
+    } finally {
+      searchBtn.disabled = false;
+      searchBtn.textContent = "Search";
+    }
+  };
+
+  searchBtn.addEventListener("click", runSearch);
+
+  titleInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      runSearch();
+    }
+  });
+
+  titleInput.addEventListener("input", () => {
+    draft.title = titleInput.value;
+  });
+
+  titleInput.addEventListener("focus", () => {
+    if (resultsBox.innerHTML.trim()) resultsBox.hidden = false;
+  });
+}
+
+/* ─────────────────────────────────────────────
+   Editor
+   ───────────────────────────────────────────── */
+function openEditor(id) {
+  const isNew = !id;
+  const draft = isNew ? blankBook() : JSON.parse(JSON.stringify(state.books.find((x) => x.id === id)));
+  const wrap = document.createElement("div");
+  wrap.className = "editor";
+  wrap.innerHTML = `
+    ${isNew ? `
+      <div class="field book-title-lookup-field">
+        <label>Title</label>
+        <div class="book-title-search-row">
+          <input type="text" data-k="title" value="${escapeHtml(draft.title)}" placeholder="Book title">
+          <button class="header-btn book-title-search-btn" id="bookTitleSearchBtn" type="button">Search</button>
+        </div>
+        <div class="google-books-results" id="googleBooksResults" hidden></div>
+      </div>
+    ` : `
+      <div class="field">
+        <label>Title</label>
+        <input type="text" data-k="title" value="${escapeHtml(draft.title)}" placeholder="Book title">
+      </div>
+    `}
+    <div class="field">
+      <label>Author</label>
+      <input type="text" data-k="author" value="${escapeHtml(draft.author)}" placeholder="Author">
+    </div>
+    <div class="field">
+      <label>Genre</label>
+      <select data-k="genre">
+        <option value="">—</option>
+        ${GENRES.map((g) => `<option value="${escapeHtml(g)}" ${draft.genre===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+      </select>
+    </div>
+    <div class="field">
+      <label>Series name</label>
+      <input type="text" data-k="seriesName" value="${escapeHtml(draft.seriesName)}" placeholder="Series name (optional)">
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Book #</label>
+        <select data-k="seriesCurrent">
+          ${Array.from({ length: 12 }, (_, i) => i + 1).map((n) => `<option value="${n}" ${Number(draft.seriesCurrent) === n ? "selected" : ""}>${n}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Of total</label>
+        <select data-k="seriesTotal">
+          ${Array.from({ length: 12 }, (_, i) => i + 1).map((n) => `<option value="${n}" ${Number(draft.seriesTotal) === n ? "selected" : ""}>${n}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Series status</label>
+      <div class="seg" data-seg="seriesStatus">
+        <button data-v="standalone" class="${draft.seriesStatus==="standalone"?"on":""}">Standalone</button>
+        <button data-v="no" class="${draft.seriesStatus==="no"?"on":""}">Ongoing</button>
+        <button data-v="yes" class="${draft.seriesStatus==="yes"?"on":""}">Complete</button>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Publication date</label>
+        <input type="text" data-k="publicationDate" value="${escapeHtml(draft.publicationDate || "")}" placeholder="1997 or June 26, 1997">
+      </div>
+      <div class="field">
+        <label>Page count</label>
+        <input type="number" min="0" data-k="pageCount" value="${draft.pageCount || 0}">
+      </div>
+    </div>
+    <div class="field">
+      <label>Description</label>
+      <textarea data-k="notes" placeholder="Book description…">${escapeHtml(draft.notes)}</textarea>
+    </div>
+    <div class="field">
+      <label>Goodreads URL</label>
+      <input type="url" data-k="goodreadsUrl" value="${escapeHtml(draft.goodreadsUrl)}" placeholder="https://…">
+    </div>
+
+    <div class="field">
+      <label>Status</label>
+      <div class="seg" data-seg="status">
+        ${["want","reading","vetting","finished","dnf"].map((s) => `
+          <button data-v="${s}" class="${draft.status===s?"on":""}">${STATUS_LABELS[s]}</button>
+        `).join("")}
+      </div>
+    </div>
+    <div class="field">
+      <label>Slow burn</label>
+      <div class="seg" data-seg="slowBurn">
+        <button data-v="false" class="${!draft.slowBurn?"on":""}">No</button>
+        <button data-v="true" class="${draft.slowBurn?"on":""}">Yes</button>
+      </div>
+    </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Spice level</label>
+          <div class="glyph-picker" data-picker="spice">
+            ${[1,2,3,4,5].map((n) => `<button data-v="${n}" class="${draft.spice>=n?"on":""}">${n === 1 ? "🫑" : "🌶️"}</button>`).join("")}
+          </div>
+        </div>
+        <div class="field">
+          <label>Your rating</label>
+          <div class="glyph-picker stars" data-picker="rating">
+            ${[1,2,3,4,5].map((n) => `<button data-v="${n}" class="${draft.rating>=n?"on":""}">${draft.rating>=n?"🌟":"☆"}</button>`).join("")}
+          </div>
+        </div>
+      </div>
+    <div class="field">
+      <label>Date finished</label>
+      <input type="date" data-k="dateFinished" value="${escapeHtml(draft.dateFinished || "")}">
+    </div>
+    <div class="field">
+      <label>Romance.io URL</label>
+      <input type="url" data-k="romanceIoUrl" value="${escapeHtml(draft.romanceIoUrl)}" placeholder="https://…">
+    </div>
+    <div class="field">
+      <label>Sobrief URL</label>
+      <input type="url" data-k="sobriefUrl" value="${escapeHtml(draft.sobriefUrl)}" placeholder="https://…">
+    </div>
+  `;
+
+  $$("input[data-k], textarea[data-k], select[data-k]", wrap).forEach((el) => {
+    const updateDraftField = () => {
+      const k = el.dataset.k;
+      let v = el.value;
+      if (el.type === "number" || k === "seriesCurrent" || k === "seriesTotal" || k === "pageCount") {
+        v = parseInt(v || "0", 10) || 0;
+      }
+      draft[k] = v;
+    };
+
+    el.addEventListener("input", updateDraftField);
+    el.addEventListener("change", updateDraftField);
+  });
+  $$("[data-seg]", wrap).forEach((seg) => {
+    const k = seg.dataset.seg;
+    seg.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      let v = btn.dataset.v;
+      if (v === "true") v = true; else if (v === "false") v = false;
+      draft[k] = v;
+      $$("button", seg).forEach((b) => b.classList.toggle("on", b === btn));
+    });
+  });
+  $$("[data-picker]", wrap).forEach((p) => {
+    const k = p.dataset.picker;
+    p.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const v = parseInt(btn.dataset.v, 10);
+      draft[k] = draft[k] === v ? 0 : v;
+      $$("button", p).forEach((b) => {
+        const isOn = parseInt(b.dataset.v, 10) <= draft[k] && draft[k] > 0;
+        b.classList.toggle("on", isOn);
+        if (k === "rating") b.textContent = isOn ? "🌟" : "☆";
+      });
+    });
+  });
+
+  if (isNew) attachGoogleBooksLookup(wrap, draft);
+
+  openSheet({
+    title: isNew ? "Add Book" : "Edit book",
+    body: wrap,
+    sheetClass: "detail-popup-sheet",
+    save: () => {
+      $$("input[data-k], textarea[data-k], select[data-k]", wrap).forEach((el) => {
+        const k = el.dataset.k;
+        let v = el.value;
+        if (el.type === "number" || k === "seriesCurrent" || k === "seriesTotal" || k === "pageCount") {
+          v = parseInt(v || "0", 10) || 0;
+        }
+        draft[k] = v;
+      });
+
+      $$('[data-seg]', wrap).forEach((seg) => {
+        const selected = $("button.on", seg);
+        if (!selected) return;
+        const k = seg.dataset.seg;
+        let v = selected.dataset.v;
+        if (v === "true") v = true;
+        else if (v === "false") v = false;
+        draft[k] = v;
+      });
+
+      const slowBurnSource = [draft.title, draft.genre, draft.notes].filter(Boolean).join(" ");
+      const detectedTropes = detectTropes(slowBurnSource);
+      draft.tropes = [...new Set([...(Array.isArray(draft.tropes) ? draft.tropes : []), ...detectedTropes])];
+
+      const inferredGenre = inferGenreFromTropes(draft.tropes);
+      if (inferredGenre && !draft.genre) {
+        draft.genre = inferredGenre;
+      }
+
+      if (detectSlowBurn(slowBurnSource, draft.tropes)) {
+        draft.slowBurn = true;
+      }
+
+      if (!draft.title.trim()) { showToast("Title required"); return; }
+      if (isNew) {
+        draft.dateAdded = draft.dateAdded || todayLocalDate();
+        state.books.unshift(draft);
+      }
+      else {
+        const i = state.books.findIndex((x) => x.id === id);
+        if (i >= 0) state.books[i] = draft;
+      }
+      persist();
+      renderAll();
+      closeSheet();
+      if (isNew) {
+        showSimpleConfirmMessage("Book added");
+      } else {
+        showSimpleConfirmMessage("Saved");
+      }
+    },
+  });
+}
+
+/* ─────────────────────────────────────────────
+   Filter sheet
+   ───────────────────────────────────────────── */
+function openFilters() {
+  const f = { ...state.filters };
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `
+    <div class="field-row" style="display:flex; justify-content:center; align-items:flex-start; gap:96px; text-align:center;">
+      <div class="field">
+        <label>Spice level</label>
+        <div class="glyph-picker" data-picker="spice">
+          ${[1,2,3,4,5].map((n) => `<button data-v="${n}" class="${f.spice != null && f.spice >= n?"on":""}">${n === 1 ? "🫑" : "🌶️"}</button>`).join("")}
+        </div>
+      </div>
+      <div class="field">
+        <label>Star rating</label>
+        <div class="glyph-picker stars" data-picker="rating">
+          ${[1,2,3,4,5].map((n) => `<button data-v="${n}" class="${f.rating===n?"on":""}">${f.rating != null && f.rating >= n ? "🌟" : "☆"}</button>`).join("")}
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Genre</label>
+      <select data-k="genre">
+        <option value="">Any</option>
+        ${GENRES.map((g) => `<option value="${escapeHtml(g)}" ${f.genre===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+      </select>
+    </div>
+    <div class="field">
+      <label>Slow burn</label>
+      <div class="seg" data-seg="slowBurn">
+        <button data-v="null" class="${f.slowBurn===null?"on":""}">Any</button>
+        <button data-v="true" class="${f.slowBurn===true?"on":""}">Yes</button>
+        <button data-v="false" class="${f.slowBurn===false?"on":""}">No</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Tropes</label>
+      <div class="trope-filter-list" data-trope-filter style="display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:10px 8px; text-align:center; font-size:0.85em;">
+        ${TROPE_KEYWORDS.map((trope) => `
+          <button type="button" data-v="${escapeHtml(trope.label)}" class="${Array.isArray(f.tropes) && f.tropes.includes(trope.label) ? "on" : ""}">
+            <span style="font-size:0.82em;">✦</span> ${escapeHtml(trope.label).toUpperCase()} <span style="font-size:0.82em;">✦</span>
+          </button>
+        `).join("")}
+      </div>
+    </div>
+    <div class="sticky-actions">
+      <button class="btn" id="filterReset">Reset</button>
+      <button class="btn primary" id="filterApply">Apply</button>
+    </div>
+  `;
+
+  $("select[data-k='genre']", wrap).addEventListener("change", (e) => { f.genre = e.target.value; });
+  $("[data-picker='spice']", wrap).addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const v = parseInt(btn.dataset.v, 10);
+    f.spice = f.spice === v ? null : v;
+
+    $$("button", btn.parentElement).forEach((b) => {
+      const current = parseInt(b.dataset.v, 10);
+      const isOn = f.spice != null && current <= f.spice;
+      b.classList.toggle("on", isOn);
+    });
+  });
+  $("[data-seg='slowBurn']", wrap).addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    let v = btn.dataset.v;
+    if (v === "null") v = null;
+    else v = v === "true";
+    f.slowBurn = v;
+    $$("button", btn.parentElement).forEach((b) => b.classList.toggle("on", b === btn));
+  });
+  $(`[data-trope-filter]`, wrap).addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const trope = btn.dataset.v;
+    f.tropes = Array.isArray(f.tropes) ? [...f.tropes] : [];
+    if (f.tropes.includes(trope)) {
+      f.tropes = f.tropes.filter((item) => item !== trope);
+      btn.classList.remove("on");
+    } else {
+      f.tropes.push(trope);
+      btn.classList.add("on");
+    }
+  });
+  $(`[data-picker='rating']`, wrap).addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const v = parseInt(btn.dataset.v, 10);
+    f.rating = f.rating === v ? null : v;
+
+    $$("button", btn.parentElement).forEach((b) => {
+      const current = parseInt(b.dataset.v, 10);
+      const isOn = f.rating != null && current <= f.rating;
+      b.classList.toggle("on", isOn);
+      b.textContent = isOn ? "🌟" : "☆";
+    });
+  });
+
+  $("#filterReset", wrap).addEventListener("click", () => {
+    state.filters = { ...state.filters, spice: null, rating: null, genre: "", slowBurn: null, seriesStatus: "", tropes: [] };
+    renderAll();
+    closeSheet();
+  });
+  $("#filterApply", wrap).addEventListener("click", () => {
+    state.filters = { ...state.filters, ...f };
+    renderAll();
+    closeSheet();
+  });
+
+  openSheet({ title: "Filters", body: wrap, sheetClass: "detail-popup-sheet filter-sheet" });
+}
+
+/* ─────────────────────────────────────────────
+   Events
+   ───────────────────────────────────────────── */
+$("#search").addEventListener("input", (e) => {
+  state.filters.search = e.target.value;
+  renderList();
+});
+$("#filterBtn").addEventListener("click", openFilters);
+$("#viewToggle").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-view]");
+  if (!btn) return;
+
+  state.viewMode = btn.dataset.view;
+  persistViewMode();
+  renderViewToggle();
+  renderStatusTabs();
+  renderList();
+});
+$("#headerAddBtn").addEventListener("click", () => openEditor(null));
+$("#statsBtn").addEventListener("click", () => {
+  const p = $("#statsPanel");
+  p.hidden = !p.hidden;
+  if (!p.hidden) {
+    renderStats();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+});
+
+$("#statsRangeBar").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-range]");
+  if (!btn) return;
+  state.statsRange.mode = btn.dataset.range;
+  renderStats();
+});
+
+$("#statsStartDate").addEventListener("input", (e) => {
+  state.statsRange.startDate = e.target.value;
+  state.statsRange.mode = "custom";
+  renderStats();
+});
+
+$("#statsEndDate").addEventListener("input", (e) => {
+  state.statsRange.endDate = e.target.value;
+  state.statsRange.mode = "custom";
+  renderStats();
+});
+
+/* ─────────────────────────────────────────────
+   Init
+   ───────────────────────────────────────────── */
+function renderAll() {
+  renderStatusTabs();
+  renderViewToggle();
+  renderList();
+  if (!$("#statsPanel").hidden) renderStats();
+}
+
+(async function init() {
+  const data = await loadData();
+  state.books = data.books || [];
+  renderAll();
+})();
+</script>
+</body>
+</html>
